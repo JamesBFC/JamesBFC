@@ -3,7 +3,7 @@
 $url = "https://github.com/JamesBFC/JamesBFC/raw/refs/heads/main/SmartCitizen.SmartInput.exe"
 
 # Specify the full path where you want to save and run the file
-$destinationPath = "C:\Program Files (x86)\SmartCitizen Ltd\SmartCitizen Smart Input"
+$destinationPath = "C:\"
 # --- End of Configuration ---
 
 # 1. Download the file
@@ -26,4 +26,5 @@ try {
 }
 catch {
     Write-Host "Error running file: $_"
+
 }
