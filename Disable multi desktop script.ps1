@@ -1,21 +1,30 @@
-# 1. Block the Virtual Desktop Feature entirely
-$policyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer"
-if (-not (Test-Path $policyPath)) { New-Item -Path $policyPath -Force }
+# 1. Target the Global Policies (Machine-Wide)
+$registryPaths = @(
+    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer",
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+)
 
-# This is the "Nuclear Option" for Virtual Desktops
-Set-ItemProperty -Path $policyPath -Name "NoDesktopCreation" -Value 1 -Type DWord
-Set-ItemProperty -Path $policyPath -Name "HideTaskViewButton" -Value 1 -Type DWord
+foreach ($path in $registryPaths) {
+    if (-not (Test-Path $path)) {
+        New-Item -Path $path -Force | Out-Null
+    }
+}
 
-# 2. Block the Hotkey for physical keyboards
-$advancedPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
-Set-ItemProperty -Path $advancedPath -Name "DisabledHotkeys" -Value "Tab" -Type String
+# 2. Apply Restrictions
+# Disable Virtual Desktop creation
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer" -Name "NoDesktopCreation" -Value 1 -Type DWord
 
-# 3. Disable the Touch Keyboard/Handwriting service (The OSK Backdoor)
-# This prevents the touch-style keyboard from appearing in the tray
-Set-Service -Name "TabletInputService" -StartupType Disabled
-Stop-Service -Name "TabletInputService" -Force -ErrorAction SilentlyContinue
+# Hide the Task View button from the Taskbar for all users
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer" -Name "HideTaskViewButton" -Value 1 -Type DWord
 
-# 4. Force Registry to Disk for Deep Freeze
-[Microsoft.Win32.Registry]::SetValue("HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\Explorer", "NoDesktopCreation", 1)
+# Kill the Win+Tab hotkey (adding 'Tab' to DisabledHotkeys)
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "DisabledHotkeys" -Value "Tab" -Type String
 
-Write-Host "Multi-desktop creation and OSK-backdoor disabled." -ForegroundColor Green
+# 3. Apply to the Default User Profile (for all future logins)
+# We load the Default User hive, modify it, then unload it.
+reg load "HKU\DefaultUser" "C:\Users\Default\NTUSER.DAT"
+reg add "HKU\DefaultUser\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v "ShowTaskViewButton" /t REG_DWORD /d 0 /f
+reg add "HKU\DefaultUser\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v "DisabledHotkeys" /t REG_SZ /d "Tab" /f
+reg unload "HKU\DefaultUser"
+
+Write-Host "System-level restrictions applied for Multi-Desktop and Win+Tab."
