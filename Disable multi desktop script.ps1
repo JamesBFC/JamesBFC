@@ -1,22 +1,30 @@
-# 1. Define Registry Paths
-$policyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer"
-$advancedPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+# 1. Target the Global Policies (Machine-Wide)
+$registryPaths = @(
+    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer",
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+)
 
-# Create Policy key if it doesn't exist
-if (-not (Test-Path $policyPath)) {
-    New-Item -Path $policyPath -Force | Out-Null
+foreach ($path in $registryPaths) {
+    if (-not (Test-Path $path)) {
+        New-Item -Path $path -Force | Out-Null
+    }
 }
 
-# 2. Apply the Restrictions
-# Disables Virtual Desktop creation and hides the Task View button
-Set-ItemProperty -Path $policyPath -Name "NoDesktopCreation" -Value 1 -Type DWord
-Set-ItemProperty -Path $policyPath -Name "HideTaskViewButton" -Value 1 -Type DWord
+# 2. Apply Restrictions
+# Disable Virtual Desktop creation
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer" -Name "NoDesktopCreation" -Value 1 -Type DWord
 
-# Disables the Win+Tab Hotkey combination
-Set-ItemProperty -Path $advancedPath -Name "DisabledHotkeys" -Value "Tab" -Type String
+# Hide the Task View button from the Taskbar for all users
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer" -Name "HideTaskViewButton" -Value 1 -Type DWord
 
-# 3. Force Registry to save to disk immediately
-# This is crucial for Deep Freeze to "see" the change before a potential state change
-[void][Microsoft.Win32.Registry]::SetValue("HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\Explorer", "NoDesktopCreation", 1)
+# Kill the Win+Tab hotkey (adding 'Tab' to DisabledHotkeys)
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "DisabledHotkeys" -Value "Tab" -Type String
 
-Write-Host "Multi-Desktop and Win+Tab disabled successfully."
+# 3. Apply to the Default User Profile (for all future logins)
+# We load the Default User hive, modify it, then unload it.
+reg load "HKU\DefaultUser" "C:\Users\Default\NTUSER.DAT"
+reg add "HKU\DefaultUser\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v "ShowTaskViewButton" /t REG_DWORD /d 0 /f
+reg add "HKU\DefaultUser\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v "DisabledHotkeys" /t REG_SZ /d "Tab" /f
+reg unload "HKU\DefaultUser"
+
+Write-Host "System-level restrictions applied for Multi-Desktop and Win+Tab."
