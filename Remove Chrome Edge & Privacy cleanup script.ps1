@@ -27,7 +27,7 @@ Write-Output "Checking for Google Chrome..."
 $chromeMsi = Get-CimInstance -Class Win32_Product | Where-Object { $_.Name -match "Google Chrome" }
 if ($chromeMsi) {
     Write-Output "Found Chrome MSI. Uninstalling..."
-    $chromeMsi.Uninstall() | Out-Null
+    Invoke-CimMethod -InputObject $chromeMsi -MethodName Uninstall | Out-Null
 }
 
 # Check for System-Level EXE Installation
@@ -73,10 +73,11 @@ for ($i = 0; $i -lt $dataTypesToClear.Count; $i++) {
 }
 
 # ---------------------------------------------------------
-# 4. WINDOWS EXPLORER (WIN 11) - DISABLE RECENT FILES
+# 4. WINDOWS EXPLORER (WIN 11) - POLICIES & WIPE
 # ---------------------------------------------------------
-Write-Output "Disabling Windows 11 Explorer recent file tracking..."
+Write-Output "Configuring Windows 11 Explorer policies and wiping existing recent files..."
 
+# A. Apply Policies
 $explorerPolicyPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
 if (!(Test-Path $explorerPolicyPath)) { New-Item -Path $explorerPolicyPath -Force | Out-Null }
 
@@ -85,12 +86,24 @@ Set-ItemProperty -Path $explorerPolicyPath -Name "NoRecentDocsHistory" -Value 1 
 # Clears whatever might currently be lingering in the recent docs list on exit
 Set-ItemProperty -Path $explorerPolicyPath -Name "ClearRecentDocsOnExit" -Value 1 -Type DWord
 
+# B. Wipe Existing Cache for All Users
+$userProfiles = Get-ChildItem -Path "C:\Users" -Directory -ErrorAction SilentlyContinue
+
+foreach ($profile in $userProfiles) {
+    # Path to the hidden Recent folder where Quick Access and Jump Lists are stored
+    $recentPath = "$($profile.FullName)\AppData\Roaming\Microsoft\Windows\Recent"
+    
+    if (Test-Path $recentPath) {
+        Write-Output "Clearing recent files for user: $($profile.Name)"
+        # The asterisk (*) ensures we delete the contents, not the Recent folder itself
+        Remove-Item -Path "$recentPath\*" -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
 
 # ---------------------------------------------------------
 # 5. MICROSOFT OFFICE - DISABLE RECENT FILES
 # ---------------------------------------------------------
 Write-Output "Disabling Microsoft Office recent files..."
-# Note: Version '16.0' applies to Office 2016, 2019, 2021, and Microsoft 365 Apps.
 
 # Method A: Apply to Local Machine (HKLM)
 $officeMachinePolicy = "HKLM:\SOFTWARE\Policies\Microsoft\Office\16.0\Common\General"
@@ -99,7 +112,6 @@ Set-ItemProperty -Path $officeMachinePolicy -Name "MaxDisplay" -Value 0 -Type DW
 Set-ItemProperty -Path $officeMachinePolicy -Name "RecentFolders" -Value 0 -Type DWord
 
 # Method B: Apply to all currently loaded User Hives (HKU)
-# Because SYSTEM doesn't touch logged-in user settings directly, we loop through all active profiles.
 $userHives = Get-ChildItem -Path "Registry::HKEY_USERS" | Where-Object { $_.Name -notmatch "_Classes$" }
 
 foreach ($hive in $userHives) {
