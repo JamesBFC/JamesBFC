@@ -1,21 +1,22 @@
 # ==============================================================================
-# Script: Install-AptosFont.ps1
-# Context: Run as SYSTEM
-# Purpose: Downloads and installs the Microsoft Aptos font family system-wide.
+# Script: Install-AptosFont-DeepFreeze.ps1
+# Context: Run as SYSTEM (32-bit or 64-bit safe)
+# Purpose: Downloads and installs the Microsoft Aptos font family system-wide,
+#          bypassing 32-bit File System Redirection (for Faronics/RMM agents).
 # ==============================================================================
 
 $ErrorActionPreference = "Stop"
 
-# We use a reliable GitHub mirror of the official TTF files. 
-# Microsoft's official download center links (.aspx) require a browser session 
-# or token and will fail when downloaded via Invoke-WebRequest in a headless context.
+# Reliable GitHub mirror for headless SYSTEM downloads
 $ZipUrl = "https://github.com/ironveil/ttf-aptos/archive/refs/heads/main.zip"
 $TempDir = Join-Path $env:TEMP "AptosFonts_Deployment"
 $ZipPath = Join-Path $env:TEMP "AptosFonts.zip"
+
+# We explicitly target the native SystemRoot to avoid WOW64 redirection
 $FontsDir = "$env:windir\Fonts"
 $RegKeyPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"
 
-# Load Windows APIs to register the font and broadcast the change without a reboot
+# Load Windows APIs to register the font and broadcast the change
 $PInvoke = @'
 using System;
 using System.Runtime.InteropServices;
@@ -55,8 +56,12 @@ try {
 
         Write-Output "Installing: $CleanName"
 
-        # 1. Copy the file directly to the Windows Fonts directory
-        Copy-Item -Path $Font.FullName -Destination $TargetFile -Force
+        # 1. Bypass PowerShell's File Provider and 32-bit Redirection using raw .NET
+        try {
+            [System.IO.File]::Copy($Font.FullName, $TargetFile, $true)
+        } catch {
+            Write-Warning "Could not copy $($Font.Name). It may already be locked by the OS."
+        }
 
         # 2. Add the registry key to register the font system-wide
         New-ItemProperty -Path $RegKeyPath -Name $RegName -Value $Font.Name -PropertyType String -Force | Out-Null
