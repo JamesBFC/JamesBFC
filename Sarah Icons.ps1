@@ -20,7 +20,7 @@ $Shortcuts = @(
 )
 
 try {
-    # 3. Force modern TLS protocols for GitHub downloads
+    # 3. Force TLS 1.2+
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
 
     if (-not (Test-Path -Path $IconStorageDir)) {
@@ -41,41 +41,67 @@ try {
     Expand-Archive -Path $TempZipPath -DestinationPath $IconStorageDir -Force
     Remove-Item -Path $TempZipPath -Force -ErrorAction SilentlyContinue
 
-    # 5. Resolve active console user session
-    $CurrentConsoleUser = (Get-CimInstance -ClassName Win32_ComputerSystem).UserName
+    # 5. Resolve logged-in interactive user via the explorer.exe process
+    $ExplorerProcess = Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" | Select-Object -First 1
 
-    if ([string]::IsNullOrWhiteSpace($CurrentConsoleUser)) {
-        Write-Warning "Icons extracted successfully, but no active console user session was detected. Exiting."
+    if (-not $ExplorerProcess) {
+        Write-Warning "No active explorer.exe session found. Machine may be sitting at login screen. Exiting."
         exit 0
     }
 
-    Write-Host "Active console user: $CurrentConsoleUser"
+    $OwnerInfo = Invoke-CimMethod -InputObject $ExplorerProcess -MethodName GetOwner
+    $CleanUserName = $OwnerInfo.User
+    $CleanDomain   = $OwnerInfo.Domain
+    $FullAccount   = "$CleanDomain\$CleanUserName"
 
-    # 6. Resolve user SID and real Desktop directory (works with standard or redirected profiles)
-    $AccountObj = New-Object System.Security.Principal.NTAccount($CurrentConsoleUser)
+    Write-Host "Active session detected via Explorer: $FullAccount"
+
+    # 6. Resolve user SID from account name
+    $AccountObj = New-Object System.Security.Principal.NTAccount($FullAccount)
     $UserSID = ($AccountObj.Translate([System.Security.Principal.SecurityIdentifier])).Value
+    Write-Host "Resolved User SID: $UserSID"
 
-    $UserShellFoldersPath = "Registry::HKEY_USERS\$UserSID\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
-    $RawDesktopPath = (Get-ItemProperty -Path $UserShellFoldersPath -Name "Desktop" -ErrorAction Stop).Desktop
+    # 7. Get Profile Path from HKLM ProfileList (always accessible by SYSTEM)
+    $ProfileRegPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$UserSID"
+    $UserProfileDir = (Get-ItemProperty -Path $ProfileRegPath -Name "ProfileImagePath" -ErrorAction Stop).ProfileImagePath
 
-    $ProfilePath = (Get-ItemProperty -Path "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$UserSID").ProfileImagePath
-    $DesktopPath = $RawDesktopPath -replace '(?i)%USERPROFILE%', $ProfilePath
-    $DesktopPath = [System.Environment]::ExpandEnvironmentVariables($DesktopPath)
-
-    if (-not (Test-Path -Path $DesktopPath)) {
-        throw "Resolved desktop path does not exist: $DesktopPath"
+    if (-not (Test-Path -Path $UserProfileDir)) {
+        throw "User profile folder does not exist at: $UserProfileDir"
     }
 
-    Write-Host "Target Desktop: $DesktopPath"
+    # 8. Check for OneDrive Desktop redirection vs Standard Desktop
+    $DesktopCandidates = @(
+        (Join-Path -Path $UserProfileDir -ChildPath "OneDrive - Bracknell Forest Council\Desktop"),
+        (Join-Path -Path $UserProfileDir -ChildPath "OneDrive\Desktop"),
+        (Join-Path -Path $UserProfileDir -ChildPath "Desktop")
+    )
 
-    # 7. Write standard .url files with icon pointers
+    $DesktopPath = $null
+    foreach ($Candidate in $DesktopCandidates) {
+        if (Test-Path -Path $Candidate) {
+            $DesktopPath = $Candidate
+            break
+        }
+    }
+
+    if (-not $DesktopPath) {
+        # Fallback creation of the standard Desktop folder if uninitialised
+        $DesktopPath = Join-Path -Path $UserProfileDir -ChildPath "Desktop"
+        New-Item -ItemType Directory -Path $DesktopPath -Force | Out-Null
+    }
+
+    Write-Host "Resolved Target Desktop: $DesktopPath"
+
+    # 9. Create .url files
     foreach ($item in $Shortcuts) {
         $ShortcutFile = Join-Path -Path $DesktopPath -ChildPath "$($item.Name).url"
-        
-        # Test direct filename or case-insensitive search if extracted with different casing
+
+        # Locate matching icon file (handles root or subfolder extraction)
         $IconFullPath = Join-Path -Path $IconStorageDir -ChildPath $item.Icon
         if (-not (Test-Path -Path $IconFullPath)) {
-            $MatchedFile = Get-ChildItem -Path $IconStorageDir -Filter "*.ico" -Recurse | Where-Object { $_.BaseName -like "*$($item.Name.Split(' ')[0])*" } | Select-Object -First 1
+            $MatchedFile = Get-ChildItem -Path $IconStorageDir -Filter "*.ico" -Recurse | Where-Object { 
+                $_.BaseName -like "*$($item.Name.Split(' ')[0])*" 
+            } | Select-Object -First 1
             if ($MatchedFile) { $IconFullPath = $MatchedFile.FullName }
         }
 
@@ -87,7 +113,7 @@ IconFile=$IconFullPath
 IconIndex=0
 "@
         } else {
-            Write-Warning "Icon not found for $($item.Name). Defaulting to standard URL shortcut."
+            Write-Warning "Icon not found for $($item.Name). Falling back to default URL shortcut."
             $UrlContent = @"
 [InternetShortcut]
 URL=$($item.Url)
@@ -95,10 +121,10 @@ URL=$($item.Url)
         }
 
         Set-Content -Path $ShortcutFile -Value $UrlContent -Encoding ASCII -Force
-        Write-Host "Created: $($item.Name).url"
+        Write-Host "Created shortcut: $($item.Name).url"
     }
 
-    # 8. Trigger shell icon cache refresh to display icons immediately
+    # 10. Force Explorer shell refresh
     $ShellNotificationCode = @'
     [System.Runtime.InteropServices.DllImport("shell32.dll")]
     public static extern void SHChangeNotify(int wEventId, int uFlags, IntPtr dwItem1, IntPtr dwItem2);
@@ -106,7 +132,7 @@ URL=$($item.Url)
     $Type = Add-Type -MemberDefinition $ShellNotificationCode -Name "ShellNotification" -Namespace "Win32Utils" -PassThru
     $Type::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero) # SHCNE_ASSOCCHANGED
 
-    Write-Host "All shortcuts deployed and shell cache refreshed."
+    Write-Host "Shortcuts deployed and desktop refreshed successfully."
 
 } catch {
     Write-Error "Execution error: $_"
