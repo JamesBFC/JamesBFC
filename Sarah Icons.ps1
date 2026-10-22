@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-    Downloads library icons from GitHub, extracts to ProgramData, and deploys 
-    custom-icon web shortcuts to the active user's desktop via Deep Freeze Cloud.
+    Downloads library icons from GitHub, grants standard users Read access,
+    and deploys custom-icon web shortcuts to the active user's desktop via Deep Freeze Cloud.
 #>
 
 # 1. Configuration & URLs
@@ -41,11 +41,24 @@ try {
     Expand-Archive -Path $TempZipPath -DestinationPath $IconStorageDir -Force
     Remove-Item -Path $TempZipPath -Force -ErrorAction SilentlyContinue
 
-    # 5. Resolve logged-in interactive user via the explorer.exe process
+    # 5. Fix NTFS permissions so the logged-in user can actually read the icons
+    Write-Host "Setting Read & Execute permissions for Users on $IconStorageDir..."
+    $Acl = Get-Acl -Path $IconStorageDir
+    $Rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+        "BUILTIN\Users",
+        "ReadAndExecute",
+        "ContainerInherit,ObjectInherit",
+        "None",
+        "Allow"
+    )
+    $Acl.AddAccessRule($Rule)
+    Set-Acl -Path $IconStorageDir -AclObject $Acl
+
+    # 6. Resolve logged-in interactive user via the explorer.exe process
     $ExplorerProcess = Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" | Select-Object -First 1
 
     if (-not $ExplorerProcess) {
-        Write-Warning "No active explorer.exe session found. Machine may be sitting at login screen. Exiting."
+        Write-Warning "No active explorer.exe session found. Exiting."
         exit 0
     }
 
@@ -54,14 +67,13 @@ try {
     $CleanDomain   = $OwnerInfo.Domain
     $FullAccount   = "$CleanDomain\$CleanUserName"
 
-    Write-Host "Active session detected via Explorer: $FullAccount"
+    Write-Host "Active session detected: $FullAccount"
 
-    # 6. Resolve user SID from account name
+    # 7. Resolve user SID from account name
     $AccountObj = New-Object System.Security.Principal.NTAccount($FullAccount)
     $UserSID = ($AccountObj.Translate([System.Security.Principal.SecurityIdentifier])).Value
-    Write-Host "Resolved User SID: $UserSID"
 
-    # 7. Get Profile Path from HKLM ProfileList (always accessible by SYSTEM)
+    # 8. Get Profile Path from HKLM ProfileList
     $ProfileRegPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$UserSID"
     $UserProfileDir = (Get-ItemProperty -Path $ProfileRegPath -Name "ProfileImagePath" -ErrorAction Stop).ProfileImagePath
 
@@ -69,7 +81,7 @@ try {
         throw "User profile folder does not exist at: $UserProfileDir"
     }
 
-    # 8. Check for OneDrive Desktop redirection vs Standard Desktop
+    # 9. Check for Desktop location (OneDrive vs Standard)
     $DesktopCandidates = @(
         (Join-Path -Path $UserProfileDir -ChildPath "OneDrive - Bracknell Forest Council\Desktop"),
         (Join-Path -Path $UserProfileDir -ChildPath "OneDrive\Desktop"),
@@ -85,18 +97,17 @@ try {
     }
 
     if (-not $DesktopPath) {
-        # Fallback creation of the standard Desktop folder if uninitialised
         $DesktopPath = Join-Path -Path $UserProfileDir -ChildPath "Desktop"
         New-Item -ItemType Directory -Path $DesktopPath -Force | Out-Null
     }
 
     Write-Host "Resolved Target Desktop: $DesktopPath"
 
-    # 9. Create .url files
+    # 10. Generate .url files
     foreach ($item in $Shortcuts) {
         $ShortcutFile = Join-Path -Path $DesktopPath -ChildPath "$($item.Name).url"
 
-        # Locate matching icon file (handles root or subfolder extraction)
+        # Locate matching icon file
         $IconFullPath = Join-Path -Path $IconStorageDir -ChildPath $item.Icon
         if (-not (Test-Path -Path $IconFullPath)) {
             $MatchedFile = Get-ChildItem -Path $IconStorageDir -Filter "*.ico" -Recurse | Where-Object { 
@@ -106,10 +117,19 @@ try {
         }
 
         if (Test-Path -Path $IconFullPath) {
+            # Normalize path slashes for Windows INI parsing
+            $SanitizedIconPath = $IconFullPath.Replace("/", "\")
+            
+            # Grant explicit read access on the specific file
+            $FileAcl = Get-Acl -Path $SanitizedIconPath
+            $FileRule = New-Object System.Security.AccessControl.FileSystemAccessRule("BUILTIN\Users", "Read", "Allow")
+            $FileAcl.AddAccessRule($FileRule)
+            Set-Acl -Path $SanitizedIconPath -AclObject $FileAcl
+
             $UrlContent = @"
 [InternetShortcut]
 URL=$($item.Url)
-IconFile=$IconFullPath
+IconFile=$SanitizedIconPath
 IconIndex=0
 "@
         } else {
@@ -121,10 +141,10 @@ URL=$($item.Url)
         }
 
         Set-Content -Path $ShortcutFile -Value $UrlContent -Encoding ASCII -Force
-        Write-Host "Created shortcut: $($item.Name).url"
+        Write-Host "Configured shortcut: $($item.Name).url with Icon: $SanitizedIconPath"
     }
 
-    # 10. Force Explorer shell refresh
+    # 11. Clear icon cache and notify shell
     $ShellNotificationCode = @'
     [System.Runtime.InteropServices.DllImport("shell32.dll")]
     public static extern void SHChangeNotify(int wEventId, int uFlags, IntPtr dwItem1, IntPtr dwItem2);
@@ -132,7 +152,12 @@ URL=$($item.Url)
     $Type = Add-Type -MemberDefinition $ShellNotificationCode -Name "ShellNotification" -Namespace "Win32Utils" -PassThru
     $Type::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero) # SHCNE_ASSOCCHANGED
 
-    Write-Host "Shortcuts deployed and desktop refreshed successfully."
+    # Touch each .url file's LastWriteTime to force the client Explorer view to redraw
+    Get-ChildItem -Path $DesktopPath -Filter "*.url" | ForEach-Object {
+        $_.LastWriteTime = (Get-Date)
+    }
+
+    Write-Host "Shortcuts updated and ACLs applied successfully."
 
 } catch {
     Write-Error "Execution error: $_"
