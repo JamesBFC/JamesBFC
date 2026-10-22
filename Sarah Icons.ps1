@@ -14,7 +14,6 @@ $Shortcuts = @(
     @{ Name = "CollectionHQ";      Icon = "collectionhq.ico";      Url = "https://login.collectionhq.com/login" },
     @{ Name = "Fantastic Fiction"; Icon = "fantasticfiction.ico";  Url = "http://www.fantasticfiction.co.uk/" },
     @{ Name = "Press Reader";      Icon = "pressreader.ico";       Url = "https://www.pressreader.com/catalog" },
-    @{ Name = "Princh Admin";      Icon = "princh.ico";            Url = "https://admp.princh.com/dashboard/history" },
     @{ Name = "Prism";             Icon = "prism.ico";             Url = "https://prism.librarymanagementcloud.co.uk/bracknellforest/" },
     @{ Name = "Soprano";           Icon = "soprano.ico";           Url = "https://soprano.librarymanagementcloud.co.uk/bracknellforest/login?referer=https%3A%2F%2Fsoprano.librarymanagementcloud.co.uk%2Fbracknellforest%2Ftasks" }
 )
